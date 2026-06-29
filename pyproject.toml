@@ -10,20 +10,25 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",
+    "numpy>=1.24",    # used across scoring/cache/pipeline, not just ML
 ]
 
-# ML / pipeline dependencies are kept optional so the GraphQL plumbing
-# (step 1) installs light. Install with:  pip install -e ".[ml]"
+# Heavy ML deps are kept optional so the plumbing + scoring logic install light.
+# Install with:  pip install -e ".[ml]"
 [project.optional-dependencies]
 ml = [
     "torch",          # DINOv2 / CLIP inference
-    "numpy",
+    "open_clip_torch",  # the CLIP channel
+    "torchvision",    # DINOv2 image transforms
     "pillow",
     "scikit-learn",   # the Tier-2 taste classifier
     "tqdm",
 ]
 label = [
     "gradio",         # the rapid frame-rating tool (Tier 2)
+]
+dev = [
+    "pytest>=7",      # the offline test suite (no torch/ffmpeg/Stash needed)
 ]
 
 [project.scripts]
