@@ -168,6 +168,39 @@ def cmd_score(args) -> int:
     return 0
 
 
+def cmd_playlist(args) -> int:
+    cfg = Config.load(args.config)
+    client = StashClient.from_config(cfg)
+    from .playlist import build_playlist, write_playlist
+
+    tag = args.tag or cfg.markers.tag_name
+    pl = build_playlist(client, tag, limit=args.limit or None)
+    out = args.out or "webapp/playlist.json"
+    write_playlist(pl, out)
+    print(f"Wrote {pl['count']} apex(es) for tag '{tag}' -> {out}")
+    if pl["count"] == 0:
+        print("  (no markers with that tag yet — run `peaks score --write` first)")
+    return 0
+
+
+def cmd_serve(args) -> int:
+    import functools
+    import http.server
+    import socketserver
+
+    directory = args.directory
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler, directory=directory
+    )
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+        print(f"Serving {directory}/ at http://localhost:{args.port}  (Ctrl-C to stop)")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="peaks", description=__doc__)
     p.add_argument(
@@ -197,6 +230,17 @@ def build_parser() -> argparse.ArgumentParser:
     scp.add_argument("--tag", help="Marker tag name (overrides config)")
     scp.add_argument("--limit", type=int, default=0, help="Max scenes (0 = all)")
     scp.set_defaults(func=cmd_score)
+
+    pp = sub.add_parser("playlist", help="Export marker apexes to webapp/playlist.json")
+    pp.add_argument("--tag", help="Marker tag to export (overrides config)")
+    pp.add_argument("--out", help="Output path (default: webapp/playlist.json)")
+    pp.add_argument("--limit", type=int, default=0, help="Max apexes (0 = all)")
+    pp.set_defaults(func=cmd_playlist)
+
+    svp = sub.add_parser("serve", help="Serve the megaboard webapp locally")
+    svp.add_argument("--port", type=int, default=8800, help="Port (default: 8800)")
+    svp.add_argument("--directory", default="webapp", help="Dir to serve (default: webapp)")
+    svp.set_defaults(func=cmd_serve)
     return p
 
 

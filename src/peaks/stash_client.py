@@ -60,6 +60,22 @@ query FindScenes($filter: FindFilterType) {
 }
 """
 
+_FIND_SCENE_MARKERS_QUERY = """
+query FindSceneMarkers($filter: FindFilterType, $marker_filter: SceneMarkerFilterType) {
+  findSceneMarkers(filter: $filter, scene_marker_filter: $marker_filter) {
+    count
+    scene_markers {
+      id
+      seconds
+      end_seconds
+      title
+      scene { id }
+      primary_tag { id name }
+    }
+  }
+}
+"""
+
 _FIND_TAGS_QUERY = """
 query FindTags($filter: FindFilterType, $tag_filter: TagFilterType) {
   findTags(filter: $filter, tag_filter: $tag_filter) {
@@ -145,6 +161,53 @@ class StashClient:
                 yield Scene.from_dict(s)
             seen += len(scenes)
             if not scenes or seen >= result["count"]:
+                break
+            page += 1
+
+    def iter_markers_by_tag(
+        self, tag_name: str, page_size: int = 200
+    ) -> Iterator[dict]:
+        """Yield scene markers whose tags include `tag_name`.
+
+        Each yielded dict: {marker_id, scene_id, seconds, end_seconds, title}.
+        Returns nothing if the tag doesn't exist yet.
+        """
+        tag = self.find_tag_by_name(tag_name)
+        if tag is None:
+            return
+        marker_filter = {
+            "tags": {"value": [tag.id], "modifier": "INCLUDES", "depth": 0}
+        }
+        page = 1
+        seen = 0
+        while True:
+            data = self.execute(
+                _FIND_SCENE_MARKERS_QUERY,
+                {
+                    "filter": {
+                        "per_page": page_size,
+                        "page": page,
+                        "sort": "scene_id",
+                        "direction": "ASC",
+                    },
+                    "marker_filter": marker_filter,
+                },
+            )
+            result = data["findSceneMarkers"]
+            markers = result["scene_markers"]
+            for m in markers:
+                scene = m.get("scene") or {}
+                yield {
+                    "marker_id": str(m["id"]),
+                    "scene_id": str(scene.get("id")) if scene.get("id") else None,
+                    "seconds": float(m.get("seconds") or 0.0),
+                    "end_seconds": (
+                        float(m["end_seconds"]) if m.get("end_seconds") else None
+                    ),
+                    "title": m.get("title", ""),
+                }
+            seen += len(markers)
+            if not markers or seen >= result["count"]:
                 break
             page += 1
 

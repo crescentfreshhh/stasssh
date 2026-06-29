@@ -40,3 +40,6 @@ models/*.joblib
 
 # Logs
 *.log
+
+# Megaboard playlist — contains stream URLs with your API key + file refs
+webapp/playlist.json

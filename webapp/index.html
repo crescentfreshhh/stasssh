@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Opus — Megaboard</title>
+  <link rel="stylesheet" href="megaboard.css" />
+</head>
+<body>
+  <header id="bar">
+    <span class="brand">Opus<span class="dim"> · megaboard</span></span>
+    <label>grid
+      <select id="grid">
+        <option value="2">2 × 2</option>
+        <option value="3" selected>3 × 3</option>
+        <option value="4">4 × 4</option>
+        <option value="5">5 × 5</option>
+      </select>
+    </label>
+    <button id="toggle">Pause</button>
+    <button id="reshuffle">Reshuffle</button>
+    <button id="mute" class="on">Muted</button>
+    <span id="status" class="dim"></span>
+  </header>
+
+  <main id="board"><!-- tiles injected here --></main>
+
+  <div id="error" hidden></div>
+
+  <script src="megaboard.js"></script>
+</body>
+</html>

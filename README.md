@@ -48,7 +48,7 @@ for *nameable* attributes (outfits, heels, etc.). See
 | 2 | Frame sampler + DINOv2 **and CLIP** embedders, resumable, on-disk cache | ✅ built, offline-tested* |
 | 3 | Tier-1 similarity scorer → `apex` markers (with dry-run) | ✅ built, offline-tested* |
 | 4 | Tier-2 rapid frame-labeler + trained taste classifier | ⬜ |
-| 5 | Megaboard web app (live-stream grid) | ⬜ |
+| 5 | Megaboard web app (live-stream grid) | ✅ built, browser-tested |
 | — | *(later)* Stash plugin trigger; pre-cut/cull exporter | ⬜ |
 
 \* Logic is unit-tested with a deterministic fake embedder (no torch/ffmpeg/Stash
@@ -96,6 +96,14 @@ peaks score                     # dry run, writes nothing
 peaks score --write             # write the apex markers into Stash
 peaks score --tag apex:heels --references ./refs-heels   # a second profile
 ```
+
+**Megaboard (step 5):**
+```bash
+peaks playlist          # export apex markers -> webapp/playlist.json
+peaks serve             # serve the grid at http://localhost:8800
+```
+A grid of looping clips that cycles in new apexes continuously. See
+[`webapp/README.md`](webapp/README.md).
 
 Config resolves from environment variables first (`STASH_URL`, `STASH_API_KEY`),
 then `config.toml`, then built-in defaults. Run the test suite with `pytest`.
