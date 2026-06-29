@@ -71,6 +71,18 @@ taste; CPU-cheap to retrain.
 **Segment post-processing** (both tiers): frame scores → moving-average smooth →
 hysteresis threshold → merge into segments with min/max length.
 
+**Tier-agnostic scoring.** Both tiers produce a `score_frames(vecs) -> (n,)`
+callable — Tier 1 is a similarity closure, Tier 2 is `classifier.predict_proba`
+— so the segmentation and marker-writing downstream are identical. `peaks score`
+auto-selects the Tier-2 model when `models/<tag>.pkl` exists, else Tier 1.
+
+**Labeling loop.** `peaks label` gathers candidates (each scene's top-scoring
+frames via the current scorer + a few random for negatives), shows them in a
+Gradio rater, and writes verdicts to the label store. `peaks train` assembles
+(X, y) by matching each label to its nearest cached frame vector and fits the
+classifier. Frames are grabbed on demand from the source files (ffmpeg single-
+frame seek) so no thumbnails are stored — keeps disk use down.
+
 ## Embedding channels: what each one captures
 
 We embed every sampled frame through **two** channels and cache both:
@@ -150,9 +162,14 @@ src/peaks/
   embedding.py     # Embedder ABC; DINOv2, CLIP (lazy torch), FakeEmbedder
   cache.py         # resumable on-disk embedding cache (.npz per scene, by fingerprint)
   scoring.py       # similarity scoring + hysteresis segment extraction (pure numpy)
-  pipeline.py      # embed_library / score_library orchestration
-  cli.py           # `peaks test | scenes | stats | embed | score`
-tests/             # offline suite (fake embedder; no torch/ffmpeg/Stash needed)
+  labels.py        # profile-aware yes/no frame label store (JSON)
+  classifier.py    # Tier-2 TasteClassifier (sklearn, lazy import; pickled)
+  labeler.py       # Gradio rapid frame-rater (the `[label]` extra)
+  playlist.py      # build webapp/playlist.json from Stash markers
+  pipeline.py      # embed / score / train / candidate orchestration
+  cli.py           # test | scenes | stats | embed | score | label | train | playlist | serve
+webapp/            # static megaboard (index.html + megaboard.css/js)
+tests/             # offline suite (fake embedder + real sklearn; no torch/ffmpeg/Stash)
 config.example.toml
 docs/ARCHITECTURE.md
 ```

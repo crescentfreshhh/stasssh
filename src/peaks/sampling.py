@@ -79,6 +79,34 @@ class FrameSampler:
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             raise SamplerError(f"could not parse duration for {path}") from exc
 
+    def grab_frame(self, path: str, time: float) -> "Image":
+        """Decode a single frame at `time` seconds (used by the labeler)."""
+        from io import BytesIO
+
+        from PIL import Image as PILImage  # lazy
+
+        cmd = [
+            self.ffmpeg,
+            "-v", "error",
+            "-ss", f"{time:g}",
+            "-i", path,
+            "-frames:v", "1",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-",
+        ]
+        try:
+            out = subprocess.run(cmd, capture_output=True, check=True)
+        except FileNotFoundError as exc:
+            raise SamplerError(f"{self.ffmpeg} not found on PATH") from exc
+        except subprocess.CalledProcessError as exc:
+            raise SamplerError(
+                f"ffmpeg frame grab failed for {path}@{time}s: {exc.stderr[:200]}"
+            ) from exc
+        if not out.stdout:
+            raise SamplerError(f"no frame decoded for {path}@{time}s")
+        return PILImage.open(BytesIO(out.stdout)).convert("RGB")
+
     def iter_frames(self, path: str) -> Iterator[tuple[float, "Image"]]:
         """Yield (timestamp_seconds, PIL.Image) sampled every `interval` seconds.
 

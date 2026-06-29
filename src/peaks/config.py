@@ -57,12 +57,20 @@ class ScoringConfig:
 
 
 @dataclass
+class ModelingConfig:
+    dir: str = "models"  # where trained classifiers are saved (gitignored)
+    classifier: str = "logreg"  # "logreg" | "mlp"
+    labels_path: str = "labels.json"
+
+
+@dataclass
 class Config:
     stash: StashConfig = field(default_factory=StashConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     markers: MarkersConfig = field(default_factory=MarkersConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    modeling: ModelingConfig = field(default_factory=ModelingConfig)
 
     @classmethod
     def load(cls, path: Path | str | None = None) -> "Config":
@@ -78,6 +86,7 @@ class Config:
         markers_raw = raw.get("markers", {})
         embedding_raw = raw.get("embedding", {})
         scoring_raw = raw.get("scoring", {})
+        modeling_raw = raw.get("modeling", {})
 
         stash = StashConfig(
             url=os.environ.get("STASH_URL", stash_raw.get("url", StashConfig.url)),
@@ -119,10 +128,16 @@ class Config:
                 "references_dir", ScoringConfig.references_dir
             ),
         )
+        modeling = ModelingConfig(
+            dir=modeling_raw.get("dir", ModelingConfig.dir),
+            classifier=modeling_raw.get("classifier", ModelingConfig.classifier),
+            labels_path=modeling_raw.get("labels_path", ModelingConfig.labels_path),
+        )
         return cls(
             stash=stash,
             sampling=sampling,
             markers=markers,
             embedding=embedding,
             scoring=scoring,
+            modeling=modeling,
         )

@@ -32,6 +32,10 @@ models/*.joblib
 *.pt
 *.onnx
 
+# Your frame labels (personal)
+labels.json
+*.labels.json
+
 # Editor / OS
 .vscode/
 .idea/

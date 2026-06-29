@@ -56,3 +56,12 @@ max_duration = 30.0     # split anything longer than this (0 = no cap)
 pad = 0.5               # pad each segment edge by this many seconds
 # Directory of example stills you love (the Tier-1 references). Gitignored.
 references_dir = "references"
+
+
+[modeling]
+# Tier-2 trained classifiers. `peaks label` collects yes/no frame labels,
+# `peaks train` fits a model per taste profile, and `peaks score` uses it
+# automatically when a models/<tag>.pkl exists (else falls back to Tier-1).
+dir = "models"            # where trained models are saved (gitignored)
+classifier = "logreg"     # "logreg" (fast, robust) | "mlp"
+labels_path = "labels.json"  # your frame labels (gitignored)

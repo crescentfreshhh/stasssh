@@ -49,6 +49,19 @@ def similarity_scores(
     raise ValueError(f"unknown reduce: {reduce!r}")
 
 
+def make_similarity_scorer(references: np.ndarray, reduce: str = "max"):
+    """Return a frame-scorer closure for Tier 1: vecs -> per-frame similarity.
+
+    Matches the signature of a trained classifier's `predict_proba`, so the two
+    tiers are interchangeable downstream.
+    """
+
+    def score_frames(vecs: np.ndarray) -> np.ndarray:
+        return similarity_scores(vecs, references, reduce=reduce)
+
+    return score_frames
+
+
 def smooth(scores: np.ndarray, window: int) -> np.ndarray:
     """Centered moving-average smoothing. window<=1 is a no-op.
 

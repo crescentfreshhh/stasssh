@@ -13,6 +13,8 @@ offline. Kept deliberately thin so the logic lives in the tested modules.
 
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -22,9 +24,13 @@ from .cache import EmbeddingCache, path_key
 from .embedding import Embedder
 from .models import Scene
 from .sampling import FrameSampler
-from .scoring import Segment, extract_segments, similarity_scores, smooth
+from .scoring import Segment, extract_segments, smooth
 
 Logger = Callable[[str], None]
+
+# A frame scorer maps (n, dim) embeddings -> (n,) per-frame scores. Both the
+# Tier-1 similarity closure and a trained classifier's predict_proba fit this.
+ScoreFn = Callable[[np.ndarray], np.ndarray]
 
 
 def scene_key(scene: Scene) -> str:
@@ -109,12 +115,15 @@ def load_references(embedder: Embedder, references_dir: str | Path) -> np.ndarra
 def score_scene(
     times: np.ndarray,
     vecs: np.ndarray,
-    references: np.ndarray,
+    score_frames: ScoreFn,
     scoring,
 ) -> list[Segment]:
-    """Pure scoring for one scene's cached embeddings (no I/O)."""
-    scores = similarity_scores(vecs, references, reduce=scoring.reduce)
-    scores = smooth(scores, scoring.smooth_window)
+    """Pure scoring for one scene's cached embeddings (no I/O).
+
+    `score_frames` is the Tier-agnostic scorer: similarity closure or a trained
+    classifier's predict_proba.
+    """
+    scores = smooth(score_frames(vecs), scoring.smooth_window)
     return extract_segments(
         scores,
         times,
@@ -131,7 +140,7 @@ def score_library(
     scenes: Iterable[Scene],
     cache: EmbeddingCache,
     embedder_name: str,
-    references: np.ndarray,
+    score_frames: ScoreFn,
     scoring,
     *,
     client=None,
@@ -157,7 +166,7 @@ def score_library(
             stats["skipped"] += 1
             continue
         times, vecs, _ = cache.load(key, embedder_name)
-        segs = score_scene(times, vecs, references, scoring)
+        segs = score_scene(times, vecs, score_frames, scoring)
         stats["scenes"] += 1
         stats["segments"] += len(segs)
         for s in segs:
@@ -175,3 +184,92 @@ def score_library(
                     f"peak={s.peak_score:.3f}"
                 )
     return stats
+
+
+# --- Tier 2: training-set assembly + candidate gathering --------------------
+
+
+@dataclass
+class Candidate:
+    """A frame to be labeled: where it is + the current model's score for it."""
+
+    key: str
+    scene_id: str | None
+    path: str | None
+    time: float
+    score: float
+
+
+def build_training_set(
+    label_store, cache: EmbeddingCache, model_name: str, profile: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assemble (X, y) from labels: each label's nearest cached frame vector.
+
+    Loads each scene's cache once. Skips labels whose scene isn't cached.
+    """
+    by_key: dict[str, list] = defaultdict(list)
+    for lab in label_store.for_profile(profile):
+        by_key[lab.key].append(lab)
+
+    rows, ys = [], []
+    for key, labs in by_key.items():
+        if not cache.has(key, model_name):
+            continue
+        times, vecs, _ = cache.load(key, model_name)
+        if len(times) == 0:
+            continue
+        for lab in labs:
+            idx = int(np.argmin(np.abs(times - lab.time)))
+            rows.append(vecs[idx])
+            ys.append(lab.label)
+    if not rows:
+        return np.zeros((0, 0), dtype=np.float32), np.zeros((0,), dtype=int)
+    return np.asarray(rows, dtype=np.float32), np.asarray(ys, dtype=int)
+
+
+def gather_candidates(
+    cache: EmbeddingCache,
+    model_name: str,
+    score_frames: ScoreFn,
+    *,
+    top_per_scene: int = 3,
+    random_per_scene: int = 1,
+    seed: int = 0,
+    limit: int | None = None,
+) -> list[Candidate]:
+    """Propose frames to label: each scene's highest-scoring frames (active
+    learning) plus a few random ones (for diverse negatives)."""
+    rng = np.random.default_rng(seed)
+    cands: list[Candidate] = []
+    for key in cache.keys(model_name):
+        times, vecs, meta = cache.load(key, model_name)
+        n = len(times)
+        if n == 0:
+            continue
+        scores = score_frames(vecs)
+        top = np.argsort(scores)[::-1][:top_per_scene]
+        rand = rng.choice(n, size=min(random_per_scene, n), replace=False)
+        for idx in sorted(set(top.tolist()) | set(rand.tolist())):
+            cands.append(
+                Candidate(
+                    key=key,
+                    scene_id=meta.get("scene_id"),
+                    path=meta.get("path"),
+                    time=float(times[idx]),
+                    score=float(scores[idx]),
+                )
+            )
+    cands.sort(key=lambda c: c.score, reverse=True)
+    return cands[:limit] if limit else cands
+
+
+def train_profile(
+    label_store, cache: EmbeddingCache, model_name: str, profile: str, kind: str = "logreg"
+):
+    """Build the training set and fit a TasteClassifier for `profile`."""
+    from .classifier import TasteClassifier
+
+    X, y = build_training_set(label_store, cache, model_name, profile)
+    clf = TasteClassifier(kind=kind, model_name=model_name, profile=profile)
+    clf.train(X, y)
+    return clf, {"samples": int(X.shape[0]), "positives": int((y == 1).sum())}

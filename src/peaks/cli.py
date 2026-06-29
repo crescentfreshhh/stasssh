@@ -6,6 +6,10 @@ Usage:
     peaks stats           # library summary: scene count, total duration, markers
     peaks embed           # sample + embed the library into the cache (GPU pass)
     peaks score           # cache -> apex segments; --write to push markers
+    peaks label           # rate candidate frames (Tier 2 labeling)
+    peaks train           # train a taste classifier from your labels
+    peaks playlist        # export apex markers -> webapp/playlist.json
+    peaks serve           # serve the megaboard webapp
 
 Run `python -m peaks <cmd>` if you haven't installed the console script.
 """
@@ -127,34 +131,70 @@ def cmd_embed(args) -> int:
     return 0
 
 
+def _safe_tag(tag: str) -> str:
+    """Filesystem-safe model filename stem for a tag (apex:heels -> apex_heels)."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
+
+
+def _build_scorer(cfg, args, tag):
+    """Return (score_frames, model_name, label) choosing Tier-2 model when a
+    trained one exists (unless --references forces Tier-1 similarity)."""
+    from pathlib import Path
+
+    from .embedding import canonical_name
+
+    model_path = (
+        Path(args.model)
+        if getattr(args, "model", None)
+        else Path(cfg.modeling.dir) / f"{_safe_tag(tag)}.pkl"
+    )
+    if model_path.exists() and not args.references:
+        from .classifier import TasteClassifier
+
+        clf = TasteClassifier.load(model_path)
+        model_name = clf.model_name or canonical_name(cfg.embedding.model)
+        return clf.predict_proba, model_name, f"Tier-2 model {model_path}"
+
+    # Tier-1 similarity: embed reference stills
+    from .pipeline import load_references
+    from .scoring import make_similarity_scorer
+
+    embedder = _build_embedder(cfg)
+    refs_dir = args.references or cfg.scoring.references_dir
+    references = load_references(embedder, refs_dir)  # may raise FileNotFoundError
+    label = f"Tier-1 similarity ({references.shape[0]} refs from {refs_dir}/)"
+    return make_similarity_scorer(references, cfg.scoring.reduce), embedder.name, label
+
+
 def cmd_score(args) -> int:
     cfg = Config.load(args.config)
     client = StashClient.from_config(cfg)
     from .cache import EmbeddingCache
-    from .pipeline import load_references, score_library
+    from .pipeline import score_library
 
-    embedder = _build_embedder(cfg)
-    cache = EmbeddingCache(cfg.embedding.cache_dir)
-    refs_dir = args.references or cfg.scoring.references_dir
+    tag = args.tag or cfg.markers.tag_name
     try:
-        references = load_references(embedder, refs_dir)
+        score_frames, model_name, label = _build_scorer(cfg, args, tag)
     except FileNotFoundError as exc:
         print(f"✗ {exc}", file=sys.stderr)
-        print(f"  Put example stills you love in: {refs_dir}/", file=sys.stderr)
+        print(
+            f"  Either put reference stills in {cfg.scoring.references_dir}/ (Tier 1),\n"
+            f"  or train a model with `peaks train --tag {tag}` (Tier 2).",
+            file=sys.stderr,
+        )
         return 1
-    print(f"Loaded {references.shape[0]} reference image(s) from {refs_dir}/")
 
+    cache = EmbeddingCache(cfg.embedding.cache_dir)
     scenes = client.iter_scenes()
     if args.limit:
         scenes = itertools.islice(scenes, args.limit)
-    tag = args.tag or cfg.markers.tag_name
     mode = "WRITING markers" if args.write else "dry run (no writes)"
-    print(f"Scoring tag '{tag}' — {mode}\n")
+    print(f"Scoring tag '{tag}' via {label} — {mode}\n")
     stats = score_library(
         scenes,
         cache,
-        embedder.name,
-        references,
+        model_name,
+        score_frames,
         cfg.scoring,
         client=client,
         tag_name=tag,
@@ -165,6 +205,77 @@ def cmd_score(args) -> int:
         f"\nDone. scenes_scored={stats['scenes']} segments_{verb}={stats['segments']} "
         f"skipped(no cache)={stats['skipped']}"
     )
+    return 0
+
+
+def cmd_train(args) -> int:
+    cfg = Config.load(args.config)
+    from pathlib import Path
+
+    from .cache import EmbeddingCache
+    from .embedding import canonical_name
+    from .labels import LabelStore
+    from .pipeline import train_profile
+
+    profile = args.tag or cfg.markers.tag_name
+    store = LabelStore(cfg.modeling.labels_path)
+    pos, neg = store.counts(profile)
+    print(f"Labels for '{profile}': {pos} positive / {neg} negative")
+    if pos == 0 or neg == 0:
+        print("✗ Need at least one positive AND one negative label. Run `peaks label`.")
+        return 1
+
+    cache = EmbeddingCache(cfg.embedding.cache_dir)
+    model_name = canonical_name(cfg.embedding.model)
+    try:
+        clf, stats = train_profile(
+            store, cache, model_name, profile, kind=cfg.modeling.classifier
+        )
+    except ImportError as exc:
+        print(f"✗ Training needs scikit-learn: {exc}", file=sys.stderr)
+        print('  Install with:  pip install -e ".[ml]"', file=sys.stderr)
+        return 2
+    out = Path(cfg.modeling.dir) / f"{_safe_tag(profile)}.pkl"
+    clf.save(out)
+    print(
+        f"Trained {cfg.modeling.classifier} on {stats['samples']} frames "
+        f"({stats['positives']} positive) -> {out}"
+    )
+    return 0
+
+
+def cmd_label(args) -> int:
+    cfg = Config.load(args.config)
+    from .cache import EmbeddingCache
+    from .embedding import canonical_name
+    from .labeler import launch_labeler
+    from .labels import LabelStore
+    from .pipeline import gather_candidates
+    from .sampling import FrameSampler
+
+    profile = args.tag or cfg.markers.tag_name
+    cache = EmbeddingCache(cfg.embedding.cache_dir)
+    model_name = canonical_name(cfg.embedding.model)
+    try:
+        score_frames, _, label = _build_scorer(cfg, args, profile)
+    except FileNotFoundError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        print(
+            f"  Add reference stills to {cfg.scoring.references_dir}/ to seed candidates.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Seeding candidates for '{profile}' via {label}")
+    cands = gather_candidates(
+        cache, model_name, score_frames, limit=args.limit or None
+    )
+    if not cands:
+        print("✗ No candidates — is the cache populated? Run `peaks embed` first.")
+        return 1
+    print(f"Launching labeler on {len(cands)} candidates (port {args.port}) ...")
+    store = LabelStore(cfg.modeling.labels_path)
+    sampler = FrameSampler(interval_seconds=cfg.sampling.interval_seconds)
+    launch_labeler(cands, store, profile, sampler.grab_frame, server_port=args.port)
     return 0
 
 
@@ -226,10 +337,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write markers to Stash (default: dry-run preview)",
     )
-    scp.add_argument("--references", help="Dir of reference stills (overrides config)")
+    scp.add_argument(
+        "--references",
+        help="Dir of reference stills — forces Tier-1 similarity (overrides config)",
+    )
+    scp.add_argument("--model", help="Path to a trained model (.pkl) for Tier-2")
     scp.add_argument("--tag", help="Marker tag name (overrides config)")
     scp.add_argument("--limit", type=int, default=0, help="Max scenes (0 = all)")
     scp.set_defaults(func=cmd_score)
+
+    tp = sub.add_parser("train", help="Train a Tier-2 taste classifier from labels")
+    tp.add_argument("--tag", help="Taste profile / tag to train (overrides config)")
+    tp.set_defaults(func=cmd_train)
+
+    lp = sub.add_parser("label", help="Launch the rapid frame-labeler (Tier 2)")
+    lp.add_argument("--tag", help="Taste profile / tag to label (overrides config)")
+    lp.add_argument(
+        "--references", help="Seed candidates via these reference stills (Tier 1)"
+    )
+    lp.add_argument("--model", help="Seed candidates via this trained model")
+    lp.add_argument("--limit", type=int, default=200, help="Max candidates (default 200)")
+    lp.add_argument("--port", type=int, default=7860, help="Gradio port (default 7860)")
+    lp.set_defaults(func=cmd_label)
 
     pp = sub.add_parser("playlist", help="Export marker apexes to webapp/playlist.json")
     pp.add_argument("--tag", help="Marker tag to export (overrides config)")

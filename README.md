@@ -47,7 +47,7 @@ for *nameable* attributes (outfits, heels, etc.). See
 | 1 | **Plumbing** — config + GraphQL client that reads scenes/markers | ✅ |
 | 2 | Frame sampler + DINOv2 **and CLIP** embedders, resumable, on-disk cache | ✅ built, offline-tested* |
 | 3 | Tier-1 similarity scorer → `apex` markers (with dry-run) | ✅ built, offline-tested* |
-| 4 | Tier-2 rapid frame-labeler + trained taste classifier | ⬜ |
+| 4 | Tier-2 rapid frame-labeler + trained taste classifier | ✅ built, tested* |
 | 5 | Megaboard web app (live-stream grid) | ✅ built, browser-tested |
 | — | *(later)* Stash plugin trigger; pre-cut/cull exporter | ⬜ |
 
@@ -96,6 +96,18 @@ peaks score                     # dry run, writes nothing
 peaks score --write             # write the apex markers into Stash
 peaks score --tag apex:heels --references ./refs-heels   # a second profile
 ```
+
+**Train a taste model (step 4 — Tier 2):** teach it *your* taste beyond simple
+similarity. Needs the `[label]` extra (`pip install -e ".[label]"`) for the UI.
+```bash
+peaks label                     # rate candidate frames yes/no in a browser UI
+                                # (seeded by Tier-1, so you rate what matters)
+peaks train                     # fit a classifier from your labels -> models/apex.pkl
+peaks score                     # now auto-uses the model (Tier 2) when present;
+                                # pass --references to force Tier-1 similarity
+```
+Each taste profile is its own tag + model, e.g. `peaks label --tag apex:heels`
+then `peaks train --tag apex:heels`.
 
 **Megaboard (step 5):**
 ```bash

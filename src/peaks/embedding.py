@@ -162,6 +162,18 @@ _REGISTRY = {
 }
 
 
+# Canonical embedder name == the cache subdirectory it writes to. Lets train/
+# score resolve the cache without instantiating a (torch-heavy) embedder.
+_CANONICAL = {"fake": "fake", "dino": "dinov2", "dinov2": "dinov2", "clip": "clip"}
+
+
+def canonical_name(alias: str) -> str:
+    key = alias.lower()
+    if key not in _CANONICAL:
+        raise ValueError(f"unknown embedder {alias!r}; choices: {sorted(_REGISTRY)}")
+    return _CANONICAL[key]
+
+
 def get_embedder(name: str, **kwargs) -> Embedder:
     key = name.lower()
     if key not in _REGISTRY:

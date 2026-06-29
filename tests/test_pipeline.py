@@ -7,6 +7,7 @@ from peaks.config import ScoringConfig
 from peaks.embedding import FakeEmbedder
 from peaks.models import Scene
 from peaks.pipeline import embed_library, score_library, scene_key
+from peaks.scoring import make_similarity_scorer
 
 
 class _StubImage:
@@ -96,7 +97,8 @@ def test_score_library_dry_run_finds_segment_without_writing(tmp_path):
 
     scoring = ScoringConfig(high=0.9, low=0.7, min_duration=2.0, merge_gap=2.0, smooth_window=1, pad=0.0)
     stats = score_library(
-        [_scene("1", "/m/1.mp4")], cache, emb.name, references, scoring,
+        [_scene("1", "/m/1.mp4")], cache, emb.name,
+        make_similarity_scorer(references, "max"), scoring,
         write=False, log=lambda *_: None,
     )
     assert stats["scenes"] == 1
@@ -113,7 +115,8 @@ def test_score_library_write_creates_markers(tmp_path):
 
     scoring = ScoringConfig(high=0.9, low=0.7, min_duration=2.0, merge_gap=2.0, smooth_window=1, pad=0.0)
     score_library(
-        [_scene("1", "/m/1.mp4")], cache, emb.name, references, scoring,
+        [_scene("1", "/m/1.mp4")], cache, emb.name,
+        make_similarity_scorer(references, "max"), scoring,
         client=client, tag_name="apex", write=True, log=lambda *_: None,
     )
     assert len(client.markers) == 1
@@ -127,7 +130,8 @@ def test_score_library_skips_uncached_scene(tmp_path):
     cache = EmbeddingCache(tmp_path)
     references = emb.embed_images([_StubImage(b"x")])
     stats = score_library(
-        [_scene("404", "/m/404.mp4")], cache, emb.name, references,
+        [_scene("404", "/m/404.mp4")], cache, emb.name,
+        make_similarity_scorer(references, "max"),
         ScoringConfig(), write=False, log=lambda *_: None,
     )
     assert stats["skipped"] == 1 and stats["scenes"] == 0
