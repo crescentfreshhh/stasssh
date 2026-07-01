@@ -47,9 +47,14 @@ batch_size = 64
 # Tier-1 similarity scoring + segment extraction. Tune `high`/`low` after you
 # see a dry run (`peaks score` without --write).
 reduce = "max"          # "max" (specific) | "mean" (broader)
+# "none": thresholds are absolute (raw cosine / probability).
+# "scene-z": scores are z-scored within each scene, so thresholds mean
+#   "N std-devs above that scene's baseline" (e.g. high = 2.0, low = 1.0).
+#   Useful because raw DINOv2/CLIP similarity baselines vary per library.
+normalize = "none"
 smooth_window = 3       # moving-average window over per-frame scores
-high = 0.45             # enter a segment at/above this similarity
-low = 0.35              # stay in it until similarity drops below this
+high = 0.45             # enter a segment at/above this score
+low = 0.35              # stay in it until the score drops below this
 min_duration = 3.0      # discard segments shorter than this (seconds)
 merge_gap = 2.0         # merge neighbouring segments closer than this (seconds)
 max_duration = 30.0     # split anything longer than this (0 = no cap)

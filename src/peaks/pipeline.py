@@ -24,7 +24,7 @@ from .cache import EmbeddingCache, path_key
 from .embedding import Embedder
 from .models import Scene
 from .sampling import FrameSampler
-from .scoring import Segment, extract_segments, smooth
+from .scoring import Segment, extract_segments, normalize_scores, smooth
 
 Logger = Callable[[str], None]
 
@@ -38,17 +38,6 @@ def scene_key(scene: Scene) -> str:
     return scene.fingerprint or path_key(scene.path or scene.id)
 
 
-def _embed_in_batches(
-    embedder: Embedder, images: list, batch_size: int
-) -> np.ndarray:
-    if not images:
-        return np.zeros((0, embedder.dim), dtype=np.float32)
-    chunks = []
-    for i in range(0, len(images), batch_size):
-        chunks.append(embedder.embed_images(images[i : i + batch_size]))
-    return np.concatenate(chunks, axis=0)
-
-
 def embed_library(
     scenes: Iterable[Scene],
     sampler: FrameSampler,
@@ -58,11 +47,18 @@ def embed_library(
     batch_size: int = 64,
     log: Logger = print,
 ) -> dict:
-    """Embed every scene not already cached. Resumable + idempotent."""
+    """Embed every scene not already cached. Resumable + idempotent.
+
+    Frames are embedded in rolling batches as they stream off ffmpeg, so at
+    most `batch_size` decoded frames are held in memory — not the whole scene.
+    Cache hits are only honoured when they were built at the same sampling
+    interval; changing the interval re-embeds instead of silently serving
+    stale, coarser samples.
+    """
     stats = {"embedded": 0, "skipped": 0, "failed": 0, "frames": 0}
     for scene in scenes:
         key = scene_key(scene)
-        if cache.has(key, embedder.name):
+        if cache.has(key, embedder.name, interval=sampler.interval):
             stats["skipped"] += 1
             continue
         if not scene.path:
@@ -70,11 +66,22 @@ def embed_library(
             stats["failed"] += 1
             continue
         try:
-            times, frames = [], []
+            times: list[float] = []
+            batch: list = []
+            chunks: list[np.ndarray] = []
             for ts, img in sampler.iter_frames(scene.path):
                 times.append(ts)
-                frames.append(img.copy())  # detach from the temp-file context
-            vecs = _embed_in_batches(embedder, frames, batch_size)
+                batch.append(img)
+                if len(batch) >= batch_size:
+                    chunks.append(embedder.embed_images(batch))
+                    batch = []
+            if batch:
+                chunks.append(embedder.embed_images(batch))
+            vecs = (
+                np.concatenate(chunks, axis=0)
+                if chunks
+                else np.zeros((0, embedder.dim), dtype=np.float32)
+            )
             cache.save(
                 key,
                 embedder.name,
@@ -123,7 +130,8 @@ def score_scene(
     `score_frames` is the Tier-agnostic scorer: similarity closure or a trained
     classifier's predict_proba.
     """
-    scores = smooth(score_frames(vecs), scoring.smooth_window)
+    scores = normalize_scores(score_frames(vecs), getattr(scoring, "normalize", "none"))
+    scores = smooth(scores, scoring.smooth_window)
     return extract_segments(
         scores,
         times,
@@ -152,13 +160,26 @@ def score_library(
 
     write=False is a dry run: it logs the segments it *would* create, perfect
     for tuning thresholds before touching Stash.
+
+    Writes are idempotent: a segment that overlaps an existing marker carrying
+    the same tag is skipped, so re-running `--write` after a threshold tweak
+    adds new finds instead of duplicating everything.
     """
-    stats = {"scenes": 0, "segments": 0, "skipped": 0}
+    stats = {"scenes": 0, "segments": 0, "skipped": 0, "existing": 0}
     tag = None
     if write:
         if client is None:
             raise ValueError("write=True requires a client")
         tag = client.find_or_create_tag(tag_name)
+
+    def _already_marked(scene: Scene, start: float, end: float) -> bool:
+        for m in scene.markers:
+            if m.primary_tag is None or m.primary_tag.name != tag_name:
+                continue
+            m_end = m.end_seconds if m.end_seconds is not None else m.seconds
+            if start <= m_end and end >= m.seconds:
+                return True
+        return False
 
     for scene in scenes:
         key = scene_key(scene)
@@ -171,6 +192,9 @@ def score_library(
         stats["segments"] += len(segs)
         for s in segs:
             if write:
+                if _already_marked(scene, s.start, s.end):
+                    stats["existing"] += 1
+                    continue
                 client.create_scene_marker(
                     scene_id=scene.id,
                     seconds=s.start,
@@ -236,31 +260,62 @@ def gather_candidates(
     random_per_scene: int = 1,
     seed: int = 0,
     limit: int | None = None,
+    exclude: set[tuple[str, float]] | None = None,
 ) -> list[Candidate]:
     """Propose frames to label: each scene's highest-scoring frames (active
-    learning) plus a few random ones (for diverse negatives)."""
+    learning) plus a few random ones (for diverse negatives).
+
+    The two pools survive `limit` *separately* — randoms are reserved their
+    proportional share rather than being sorted to the bottom and truncated,
+    otherwise the classifier never sees the diverse negatives it needs.
+    `exclude` skips frames already labeled: {(key, round(time, 2)), ...}.
+    The result is shuffled (deterministically by `seed`) so the rater isn't
+    biased by a strictly descending score order.
+    """
     rng = np.random.default_rng(seed)
-    cands: list[Candidate] = []
+    exclude = exclude or set()
+    top_pool: list[Candidate] = []
+    rand_pool: list[Candidate] = []
     for key in cache.keys(model_name):
         times, vecs, meta = cache.load(key, model_name)
         n = len(times)
         if n == 0:
             continue
         scores = score_frames(vecs)
-        top = np.argsort(scores)[::-1][:top_per_scene]
-        rand = rng.choice(n, size=min(random_per_scene, n), replace=False)
-        for idx in sorted(set(top.tolist()) | set(rand.tolist())):
-            cands.append(
-                Candidate(
-                    key=key,
-                    scene_id=meta.get("scene_id"),
-                    path=meta.get("path"),
-                    time=float(times[idx]),
-                    score=float(scores[idx]),
-                )
+
+        def _mk(idx: int) -> Candidate:
+            return Candidate(
+                key=key,
+                scene_id=meta.get("scene_id"),
+                path=meta.get("path"),
+                time=float(times[idx]),
+                score=float(scores[idx]),
             )
-    cands.sort(key=lambda c: c.score, reverse=True)
-    return cands[:limit] if limit else cands
+
+        def _fresh(idx: int) -> bool:
+            return (key, round(float(times[idx]), 2)) not in exclude
+
+        top_idx = [int(i) for i in np.argsort(scores)[::-1][:top_per_scene] if _fresh(i)]
+        top_pool.extend(_mk(i) for i in top_idx)
+        remaining = [i for i in range(n) if i not in set(top_idx) and _fresh(i)]
+        if remaining and random_per_scene:
+            pick = rng.choice(
+                remaining, size=min(random_per_scene, len(remaining)), replace=False
+            )
+            rand_pool.extend(_mk(int(i)) for i in pick)
+
+    if limit and len(top_pool) + len(rand_pool) > limit:
+        # reserve randoms their configured share of the budget
+        frac = random_per_scene / max(1, top_per_scene + random_per_scene)
+        n_rand = min(len(rand_pool), max(1, round(limit * frac)))
+        n_top = limit - n_rand
+        top_pool.sort(key=lambda c: c.score, reverse=True)
+        rng.shuffle(rand_pool)
+        top_pool, rand_pool = top_pool[:n_top], rand_pool[:n_rand]
+
+    cands = top_pool + rand_pool
+    rng.shuffle(cands)
+    return cands
 
 
 def train_profile(

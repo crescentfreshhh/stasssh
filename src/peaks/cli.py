@@ -8,6 +8,7 @@ Usage:
     peaks score           # cache -> apex segments; --write to push markers
     peaks label           # rate candidate frames (Tier 2 labeling)
     peaks train           # train a taste classifier from your labels
+    peaks clear           # delete generated markers for a tag (dry-run first)
     peaks playlist        # export apex markers -> webapp/playlist.json
     peaks serve           # serve the megaboard webapp
 
@@ -265,17 +266,44 @@ def cmd_label(args) -> int:
             file=sys.stderr,
         )
         return 1
+    store = LabelStore(cfg.modeling.labels_path)
     print(f"Seeding candidates for '{profile}' via {label}")
     cands = gather_candidates(
-        cache, model_name, score_frames, limit=args.limit or None
+        cache,
+        model_name,
+        score_frames,
+        limit=args.limit or None,
+        exclude=store.labeled_ids(profile),  # don't re-show rated frames
     )
     if not cands:
         print("✗ No candidates — is the cache populated? Run `peaks embed` first.")
         return 1
     print(f"Launching labeler on {len(cands)} candidates (port {args.port}) ...")
-    store = LabelStore(cfg.modeling.labels_path)
     sampler = FrameSampler(interval_seconds=cfg.sampling.interval_seconds)
     launch_labeler(cands, store, profile, sampler.grab_frame, server_port=args.port)
+    return 0
+
+
+def cmd_clear(args) -> int:
+    """Delete generated markers for a tag. Dry-run by default, like `score`."""
+    cfg = Config.load(args.config)
+    client = StashClient.from_config(cfg)
+    tag = args.tag or cfg.markers.tag_name
+    # strictly ours: only markers whose PRIMARY tag is the target
+    ids = [
+        m["marker_id"]
+        for m in client.iter_markers_by_tag(tag)
+        if m["primary_tag"] == tag
+    ]
+    if not ids:
+        print(f"No markers with primary tag '{tag}'. Nothing to do.")
+        return 0
+    if not args.write:
+        print(f"Would delete {len(ids)} marker(s) with primary tag '{tag}'.")
+        print("Re-run with --write to actually delete them.")
+        return 0
+    n = client.destroy_scene_markers(ids)
+    print(f"Deleted {n} marker(s) with primary tag '{tag}'.")
     return 0
 
 
@@ -303,8 +331,10 @@ def cmd_serve(args) -> int:
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler, directory=directory
     )
-    with socketserver.TCPServer(("", args.port), handler) as httpd:
-        print(f"Serving {directory}/ at http://localhost:{args.port}  (Ctrl-C to stop)")
+    # default to loopback: playlist.json carries the Stash API key in its URLs,
+    # so don't expose it to the whole LAN unless explicitly asked (--host)
+    with socketserver.TCPServer((args.host, args.port), handler) as httpd:
+        print(f"Serving {directory}/ at http://{args.host}:{args.port}  (Ctrl-C to stop)")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -360,6 +390,13 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--port", type=int, default=7860, help="Gradio port (default 7860)")
     lp.set_defaults(func=cmd_label)
 
+    cp = sub.add_parser("clear", help="Delete generated markers for a tag")
+    cp.add_argument("--tag", help="Tag whose markers to delete (overrides config)")
+    cp.add_argument(
+        "--write", action="store_true", help="Actually delete (default: dry-run count)"
+    )
+    cp.set_defaults(func=cmd_clear)
+
     pp = sub.add_parser("playlist", help="Export marker apexes to webapp/playlist.json")
     pp.add_argument("--tag", help="Marker tag to export (overrides config)")
     pp.add_argument("--out", help="Output path (default: webapp/playlist.json)")
@@ -368,6 +405,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     svp = sub.add_parser("serve", help="Serve the megaboard webapp locally")
     svp.add_argument("--port", type=int, default=8800, help="Port (default: 8800)")
+    svp.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1 — playlist.json contains your "
+        "API key; use 0.0.0.0 only if you accept LAN exposure)",
+    )
     svp.add_argument("--directory", default="webapp", help="Dir to serve (default: webapp)")
     svp.set_defaults(func=cmd_serve)
     return p

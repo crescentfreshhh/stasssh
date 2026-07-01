@@ -99,6 +99,8 @@ class TasteClassifier:
 
     @classmethod
     def load(cls, path: str | Path) -> "TasteClassifier":
+        """Load a saved model. Note: pickle executes code on load — only load
+        model files you created yourself (they live in your local models/)."""
         with open(path, "rb") as fh:
             data = pickle.load(fh)
         obj = cls(

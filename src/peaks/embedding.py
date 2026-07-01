@@ -132,7 +132,8 @@ class ClipEmbedder(Embedder):
         self.model.eval().to(self.device)
         self.tokenizer = open_clip.get_tokenizer(model_name)
         with torch.no_grad():
-            dummy = self.model.encode_text(self.tokenizer(["x"]))
+            # tokens must follow the model onto its device (CUDA crash otherwise)
+            dummy = self.model.encode_text(self.tokenizer(["x"]).to(self.device))
         self.dim = int(dummy.shape[1])
 
     def embed_images(self, images: Sequence["Image"]) -> np.ndarray:

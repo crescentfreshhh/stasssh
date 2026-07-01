@@ -25,14 +25,19 @@ API key).
   overload Stash's transcoder with too many simultaneous seeked streams.
 - **Pause / Play** — stop/▶ all tiles and the cycling.
 - **Reshuffle** — reload every tile with a fresh apex.
-- **Muted / Audio on** — tiles start muted (browsers require it for autoplay).
-  **Click any tile** to unmute just that one (click again to re-mute).
+- **Mute all** — silence the board. Tiles start muted (browsers require it for
+  autoplay); **click any tile** to unmute just that one (click again to re-mute).
 
 ## How a tile cycles
 
 Each tile streams its apex from `?start=`, advances when ~the segment's length
 has played (or on `ended`/`error`), then the weighted picker hands it the next
 apex — favouring higher-scored ones and avoiding immediate repeats.
+
+Both Stash stream behaviours are handled automatically: transcoded streams
+(playback starts at the seek point) and direct-play streams (where `?start=` is
+ignored and the whole file arrives — detected via the reported duration, then
+seeked manually to the apex).
 
 ## Notes / future
 

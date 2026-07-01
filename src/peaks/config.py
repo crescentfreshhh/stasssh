@@ -46,6 +46,7 @@ class EmbeddingConfig:
 @dataclass
 class ScoringConfig:
     reduce: str = "max"  # "max" | "mean"
+    normalize: str = "none"  # "none" | "scene-z" (thresholds become std-devs)
     smooth_window: int = 3
     high: float = 0.45  # tune after Tier-1 validation
     low: float = 0.35
@@ -111,6 +112,7 @@ class Config:
         )
         scoring = ScoringConfig(
             reduce=scoring_raw.get("reduce", ScoringConfig.reduce),
+            normalize=scoring_raw.get("normalize", ScoringConfig.normalize),
             smooth_window=int(
                 scoring_raw.get("smooth_window", ScoringConfig.smooth_window)
             ),

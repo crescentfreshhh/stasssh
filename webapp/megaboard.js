@@ -9,8 +9,7 @@ const State = {
   apexes: [],
   tiles: [],
   playing: true,
-  muted: true,
-  focused: null, // tile element currently unmuted
+  focused: null, // tile currently unmuted (all others stay muted)
 };
 
 // --- weighted, no-immediate-repeat picker ---------------------------------
@@ -49,6 +48,7 @@ function loadApex(tile) {
   if (!apex) return;
   const v = tile.video;
   tile.apex = apex;
+  tile.mode = "offset"; // re-detected per stream on loadedmetadata
   tile.label.textContent = `#${apex.scene_id} · ${fmt(apex.start)} (${apex.duration.toFixed(0)}s)`;
   v.src = apex.url;
   v.muted = tile !== State.focused;
@@ -58,6 +58,10 @@ function loadApex(tile) {
 
 function advance(tile) {
   if (!State.playing) return;
+  // debounce: timeupdate/ended/error can fire in quick succession near a swap
+  const now = performance.now();
+  if (tile.lastAdvance && now - tile.lastAdvance < 500) return;
+  tile.lastAdvance = now;
   loadApex(tile);
 }
 
@@ -74,12 +78,33 @@ function makeTile() {
   label.className = "label";
 
   el.append(video, label);
-  const tile = { el, video, label, apex: null };
+  const tile = { el, video, label, apex: null, mode: "offset", lastAdvance: 0 };
 
-  // advance when the segment's worth of playback has elapsed (the stream
-  // starts at the seek point, so currentTime ~ elapsed within the apex)
+  // Stash serves two kinds of stream for `?start=`:
+  //  - transcoded: playback begins AT the seek point, currentTime counts from
+  //    0 within the apex ("offset" mode)
+  //  - direct-play: the param is ignored, we get the whole file and
+  //    currentTime is absolute file time ("absolute" mode — seek manually)
+  // Detect which one we got from the reported duration.
+  video.addEventListener("loadedmetadata", () => {
+    if (!tile.apex) return;
+    if (
+      Number.isFinite(video.duration) &&
+      video.duration > tile.apex.duration + 5
+    ) {
+      tile.mode = "absolute";
+      video.currentTime = tile.apex.start;
+    } else {
+      tile.mode = "offset";
+    }
+  });
+
+  // advance when the segment's worth of playback has elapsed
   video.addEventListener("timeupdate", () => {
-    if (tile.apex && video.currentTime >= tile.apex.duration - 0.25) {
+    if (!tile.apex) return;
+    const end =
+      tile.mode === "absolute" ? tile.apex.end : tile.apex.duration;
+    if (video.currentTime >= end - 0.25) {
       advance(tile);
     }
   });
@@ -160,11 +185,10 @@ function wireControls() {
     setPlaying(!State.playing);
   });
   document.getElementById("reshuffle").addEventListener("click", reshuffle);
-  document.getElementById("mute").addEventListener("click", (e) => {
-    // global mute just drops focus (all tiles default to muted)
+  document.getElementById("mute").addEventListener("click", () => {
+    // an action, not a toggle: silence everything (tiles are muted unless
+    // focused, so dropping focus mutes the board)
     if (State.focused) focusTile(State.focused);
-    e.target.classList.toggle("on");
-    e.target.textContent = e.target.classList.contains("on") ? "Muted" : "Audio on";
   });
 }
 

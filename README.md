@@ -95,7 +95,11 @@ peaks embed                     # or --limit 20 to try a slice first
 peaks score                     # dry run, writes nothing
 peaks score --write             # write the apex markers into Stash
 peaks score --tag apex:heels --references ./refs-heels   # a second profile
+peaks clear --tag apex          # count our markers; --write deletes them
 ```
+Re-running `score --write` is idempotent: segments overlapping an existing
+marker of the same tag are skipped, so threshold tweaks add new finds instead
+of duplicating old ones. Use `clear --write` for a clean slate.
 
 **Train a taste model (step 4 — Tier 2):** teach it *your* taste beyond simple
 similarity. Needs the `[label]` extra (`pip install -e ".[label]"`) for the UI.

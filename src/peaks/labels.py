@@ -43,10 +43,14 @@ class LabelStore:
                 self._labels[self._id(lab.key, lab.time, lab.profile)] = lab
 
     def save(self) -> Path:
+        # atomic: write to a temp file, then replace — a crash mid-save must
+        # not corrupt an existing labels file (it's hand-collected work)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(
             json.dumps([asdict(l) for l in self._labels.values()], indent=2)
         )
+        tmp.replace(self.path)
         return self.path
 
     def add(
@@ -62,6 +66,15 @@ class LabelStore:
 
     def for_profile(self, profile: str) -> list[Label]:
         return [l for l in self._labels.values() if l.profile == profile]
+
+    def labeled_ids(self, profile: str) -> set[tuple[str, float]]:
+        """(key, rounded time) pairs already labeled for `profile` — used to
+        exclude them from fresh labeling candidates."""
+        return {
+            (l.key, round(l.time, 2))
+            for l in self._labels.values()
+            if l.profile == profile
+        }
 
     def counts(self, profile: str) -> tuple[int, int]:
         labs = self.for_profile(profile)

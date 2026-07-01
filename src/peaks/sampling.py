@@ -25,17 +25,17 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def plan_timestamps(
-    duration: float, interval: float, *, offset: float | None = None
+    duration: float, interval: float, *, offset: float = 0.0
 ) -> list[float]:
-    """Evenly spaced sample timestamps across a clip.
+    """Expected sample timestamps for a clip: `offset, offset+interval, ...`.
 
-    Starts half an interval in (so the first frame isn't the very first frame,
-    which is often black/a title card) and steps by `interval`. Pure + tested.
+    Matches how ffmpeg's `fps=1/interval` filter emits frames: the first output
+    frame comes from the very start of the clip, then one per interval. Frame i
+    therefore represents source time ~`i * interval` — timestamps must NOT be
+    shifted, or every downstream marker/label lands offset from its frame.
     """
     if duration <= 0 or interval <= 0:
         return []
-    if offset is None:
-        offset = interval / 2.0
     times: list[float] = []
     t = offset
     while t < duration:
@@ -54,10 +54,16 @@ class FrameSampler:
         interval_seconds: float = 2.0,
         ffmpeg: str = "ffmpeg",
         ffprobe: str = "ffprobe",
+        frame_size: int = 288,
     ):
+        """`frame_size`: short-side pixel size frames are downscaled to during
+        extraction (0 = keep original). Embedders resize to ~224px anyway, so
+        decoding small keeps temp-disk and RAM usage ~40x lower on HD sources
+        while staying above the model input size."""
         self.interval = interval_seconds
         self.ffmpeg = ffmpeg
         self.ffprobe = ffprobe
+        self.frame_size = frame_size
 
     def probe_duration(self, path: str) -> float:
         """Return duration in seconds via ffprobe."""
@@ -107,17 +113,29 @@ class FrameSampler:
             raise SamplerError(f"no frame decoded for {path}@{time}s")
         return PILImage.open(BytesIO(out.stdout)).convert("RGB")
 
+    def _vf(self) -> str:
+        """The ffmpeg filtergraph: sample rate + optional downscale."""
+        vf = f"fps=1/{self.interval:g}"
+        if self.frame_size:
+            # short side -> frame_size, other side scales up to keep aspect
+            vf += (
+                f",scale=w={self.frame_size}:h={self.frame_size}"
+                ":force_original_aspect_ratio=increase:force_divisible_by=2"
+            )
+        return vf
+
     def iter_frames(self, path: str) -> Iterator[tuple[float, "Image"]]:
         """Yield (timestamp_seconds, PIL.Image) sampled every `interval` seconds.
 
         Extracts with a single ffmpeg pass (`fps=1/interval`) into a temp dir,
-        loads frames, and cleans up. Frames map to planned timestamps in order.
+        loads frames, and cleans up. The fps filter emits frame i from source
+        time ~`i * interval`, so timestamps come from the actual frame index —
+        never from a precomputed plan that could drift or truncate silently.
         """
         from PIL import Image as PILImage  # lazy
 
         duration = self.probe_duration(path)
-        times = plan_timestamps(duration, self.interval)
-        if not times:
+        if duration <= 0 or self.interval <= 0:
             return
 
         tmpdir = Path(tempfile.mkdtemp(prefix="peaks-frames-"))
@@ -126,7 +144,7 @@ class FrameSampler:
                 self.ffmpeg,
                 "-v", "error",
                 "-i", path,
-                "-vf", f"fps=1/{self.interval}",
+                "-vf", self._vf(),
                 "-q:v", "3",
                 str(tmpdir / "f-%06d.jpg"),
             ]
@@ -139,9 +157,8 @@ class FrameSampler:
                     f"ffmpeg failed for {path}: {exc.stderr[:300]}"
                 ) from exc
 
-            frame_files = sorted(tmpdir.glob("f-*.jpg"))
-            for ts, fp in zip(times, frame_files):
+            for i, fp in enumerate(sorted(tmpdir.glob("f-*.jpg"))):
                 with PILImage.open(fp) as im:
-                    yield ts, im.convert("RGB")
+                    yield round(i * self.interval, 3), im.convert("RGB")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

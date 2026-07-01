@@ -35,8 +35,21 @@ class EmbeddingCache:
     def _file(self, key: str, model_name: str) -> Path:
         return self.root / model_name / f"{key}.npz"
 
-    def has(self, key: str, model_name: str) -> bool:
-        return self._file(key, model_name).exists()
+    def has(self, key: str, model_name: str, *, interval: float | None = None) -> bool:
+        """True if `key` is cached — and, when `interval` is given, was built
+        at that sampling interval. A mismatch (or missing meta) returns False
+        so the caller re-embeds instead of trusting stale-density samples."""
+        f = self._file(key, model_name)
+        if not f.exists():
+            return False
+        if interval is None:
+            return True
+        try:
+            _, _, meta = self.load(key, model_name)
+        except Exception:
+            return False  # unreadable cache entry: treat as absent
+        cached = meta.get("interval")
+        return cached is not None and abs(float(cached) - interval) < 1e-6
 
     def save(
         self,

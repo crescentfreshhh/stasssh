@@ -62,6 +62,27 @@ def make_similarity_scorer(references: np.ndarray, reduce: str = "max"):
     return score_frames
 
 
+def normalize_scores(scores: np.ndarray, mode: str) -> np.ndarray:
+    """Optionally rescale a scene's raw scores before thresholding.
+
+    "none"    — raw scores; thresholds are absolute (cosine sims / probas).
+    "scene-z" — z-score within the scene: thresholds become "N standard
+                deviations above this scene's own baseline" (e.g. high=2.0).
+                Robust to the fact that raw DINOv2/CLIP cosine baselines vary
+                a lot between libraries; the trade-off is that even a scene
+                with nothing you like still has relative peaks.
+    """
+    scores = np.asarray(scores, dtype=np.float32)
+    if mode in ("", "none") or scores.size == 0:
+        return scores
+    if mode == "scene-z":
+        std = float(scores.std())
+        if std < 1e-8:
+            return np.zeros_like(scores)
+        return (scores - float(scores.mean())) / std
+    raise ValueError(f"unknown normalize mode: {mode!r}")
+
+
 def smooth(scores: np.ndarray, window: int) -> np.ndarray:
     """Centered moving-average smoothing. window<=1 is a no-op.
 
@@ -154,17 +175,25 @@ def extract_segments(
             )
         )
 
-    # 3. merge neighbours closer than merge_gap
+    # 3. merge neighbours closer than merge_gap (means weighted by duration)
+    def _merge_pair(a: Segment, b: Segment) -> Segment:
+        total = a.duration + b.duration
+        mean = (
+            (a.mean_score * a.duration + b.mean_score * b.duration) / total
+            if total > 0
+            else (a.mean_score + b.mean_score) / 2.0
+        )
+        return Segment(
+            start=a.start,
+            end=max(a.end, b.end),
+            peak_score=max(a.peak_score, b.peak_score),
+            mean_score=mean,
+        )
+
     merged: list[Segment] = []
     for seg in segs:
         if merged and seg.start - merged[-1].end <= merge_gap:
-            prev = merged[-1]
-            merged[-1] = Segment(
-                start=prev.start,
-                end=seg.end,
-                peak_score=max(prev.peak_score, seg.peak_score),
-                mean_score=(prev.mean_score + seg.mean_score) / 2.0,
-            )
+            merged[-1] = _merge_pair(merged[-1], seg)
         else:
             merged.append(seg)
 
@@ -191,10 +220,11 @@ def extract_segments(
                 t += max_duration
         kept = split
 
-    # 6. padding (clamped to the sampled time range)
+    # 6. padding (clamped to the sampled time range); padding can make
+    #    neighbours overlap, so re-merge any that now touch
     if pad:
         lo, hi = float(times[0]), float(times[-1])
-        kept = [
+        padded = [
             Segment(
                 start=max(lo, s.start - pad),
                 end=min(hi, s.end + pad),
@@ -203,4 +233,10 @@ def extract_segments(
             )
             for s in kept
         ]
+        kept = []
+        for s in padded:
+            if kept and s.start <= kept[-1].end:
+                kept[-1] = _merge_pair(kept[-1], s)
+            else:
+                kept.append(s)
     return kept

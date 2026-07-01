@@ -96,6 +96,12 @@ mutation SceneMarkerCreate($input: SceneMarkerCreateInput!) {
 }
 """
 
+_SCENE_MARKERS_DESTROY = """
+mutation SceneMarkersDestroy($ids: [ID!]!) {
+  sceneMarkersDestroy(ids: $ids)
+}
+"""
+
 
 class StashClient:
     def __init__(self, url: str, api_key: str = "", timeout: int = 30):
@@ -197,6 +203,7 @@ class StashClient:
             markers = result["scene_markers"]
             for m in markers:
                 scene = m.get("scene") or {}
+                pt = m.get("primary_tag") or {}
                 yield {
                     "marker_id": str(m["id"]),
                     "scene_id": str(scene.get("id")) if scene.get("id") else None,
@@ -205,6 +212,7 @@ class StashClient:
                         float(m["end_seconds"]) if m.get("end_seconds") else None
                     ),
                     "title": m.get("title", ""),
+                    "primary_tag": pt.get("name", ""),
                 }
             seen += len(markers)
             if not markers or seen >= result["count"]:
@@ -250,6 +258,14 @@ class StashClient:
             input_obj["end_seconds"] = end_seconds
         data = self.execute(_SCENE_MARKER_CREATE, {"input": input_obj})
         return data["sceneMarkerCreate"]
+
+    def destroy_scene_markers(self, marker_ids: list[str], chunk: int = 100) -> int:
+        """Delete markers by id (chunked). Returns how many ids were submitted."""
+        for i in range(0, len(marker_ids), chunk):
+            self.execute(
+                _SCENE_MARKERS_DESTROY, {"ids": marker_ids[i : i + chunk]}
+            )
+        return len(marker_ids)
 
     # --- playback helpers (used by the megaboard) ---------------------------
 
